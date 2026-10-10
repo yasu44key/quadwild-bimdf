@@ -227,7 +227,51 @@ int quadPatches(const char *meshPath,
     QuadRetopology::internal::updateAllMeshAttributes(trimesh);
     double EdgeSize=avgEdge(trimesh)*scaleFactor;
     std::cout<<"Edge Size "<<EdgeSize<<std::endl;
-    const std::vector<double> edgeFactor(trimeshPartitions.size(), EdgeSize);
+    std::vector<double> edgeFactor(trimeshPartitions.size(), EdgeSize);
+
+    // STS density map: an optional "<mesh>.sizing" next to the mesh holds one size factor
+    // per vertex (1 = base size, 0.5 = quads half as big). Each patch's target edge length
+    // becomes EdgeSize x the mean factor of its faces' vertices. The quantization already
+    // averages the two patches on each shared side, so neighbours stay consistent.
+    {
+        std::string sizingFilename = meshFilename;
+        sizingFilename.erase(sizingFilename.find_last_of("."));
+        sizingFilename.append(".sizing");
+        FILE *fs = fopen(sizingFilename.c_str(), "r");
+        if (fs != nullptr) {
+            int n = 0;
+            std::vector<double> factor;
+            if (fscanf(fs, "%d", &n) == 1 && n == static_cast<int>(trimesh.vert.size())) {
+                factor.resize(n, 1.0);
+                for (int i = 0; i < n; i++) {
+                    if (fscanf(fs, "%lf", &factor[i]) != 1) { factor.clear(); break; }
+                }
+            }
+            fclose(fs);
+            if (!factor.empty()) {
+                double lo = 1e30, hi = 0.0;
+                for (size_t p = 0; p < trimeshPartitions.size(); p++) {
+                    double sum = 0.0;
+                    size_t cnt = 0;
+                    for (size_t fi : trimeshPartitions[p]) {
+                        for (int k = 0; k < 3; k++) {
+                            sum += factor[vcg::tri::Index(trimesh, trimesh.face[fi].V(k))];
+                            cnt++;
+                        }
+                    }
+                    if (cnt > 0) {
+                        double f = std::max(0.05, sum / cnt);
+                        edgeFactor[p] = EdgeSize * f;
+                        lo = std::min(lo, f);
+                        hi = std::max(hi, f);
+                    }
+                }
+                std::cout << "STS sizing: patch factor " << lo << " .. " << hi << std::endl;
+            } else {
+                std::cout << "STS sizing: ignored " << sizingFilename << " (vertex count differs)" << std::endl;
+            }
+        }
+    }
     auto qfp_result = qfp::quadrangulationFromPatches(trimesh, trimeshPartitions, trimeshCorners, edgeFactor, parameters, fixedChartClusters, quadmesh, quadmeshPartitions, quadmeshCorners, ilpResult);
 
     /*
